@@ -125,6 +125,18 @@ final class AppState: ObservableObject {
     private var scheduledWakeTimer: Timer?
     /// Rejects helper replies that a newer schedule/cancel has superseded.
     private var scheduledWakeGeneration = 0
+    /// Same, for the version probe behind the support state — two probes can be
+    /// in flight at once (launch, then a reinstall), and without this the slower
+    /// one lands last and leaves the controls disabled on stale information.
+    private var scheduledWakeSupportGeneration = 0
+    /// The date we last tried to repair the schedule for.
+    ///
+    /// Repair is triggered by reading the schedule and re-triggered by the read
+    /// that follows a failed write, so a repair that keeps failing would drive
+    /// an unbounded write loop. One attempt per state of the world is enough:
+    /// if it didn't work, it won't work by being repeated a thousand times a
+    /// minute, and the leftovers it was tidying are cosmetic.
+    private var attemptedWakeRepairFor: Date?
     private var didWakeObserver: NSObjectProtocol?
     private var clockChangeObserver: NSObjectProtocol?
 
@@ -894,8 +906,10 @@ final class AppState: ObservableObject {
             scheduledWakeSupport = .helperNotInstalled
             return
         }
+        scheduledWakeSupportGeneration += 1
+        let generation = scheduledWakeSupportGeneration
         helper.fetchVersion { [weak self] version in
-            guard let self else { return }
+            guard let self, generation == self.scheduledWakeSupportGeneration else { return }
             self.scheduledWakeSupport = ScheduledWake.supportState(helperInstalled: self.helperInstalled,
                                                                     version: version)
         }
@@ -919,9 +933,11 @@ final class AppState: ObservableObject {
             scheduledWakeUnknown = true
         case .none:
             scheduledWakeUnknown = false
+            attemptedWakeRepairFor = nil
             setScheduledWake(nil)
         case .pending(let date):
             scheduledWakeUnknown = false
+            attemptedWakeRepairFor = nil
             setScheduledWake(date)
         case .repair(let keep):
             scheduledWakeUnknown = false
@@ -929,9 +945,16 @@ final class AppState: ObservableObject {
             // Re-assert rather than reach for a cancel-these-dates call: this
             // ends with exactly one event, at the time now on screen.
             guard scheduledWakeSupport == .supported, !scheduledWakeBusy else { return }
+            // Once per state of the world. A repair that fails re-reads the
+            // schedule, which finds the same mess and would ask for the same
+            // repair — so without this the pair would spin against the helper
+            // for as long as the condition lasted.
+            guard attemptedWakeRepairFor != keep else { return }
+            attemptedWakeRepairFor = keep
             writeScheduledWake(keep, quiet: true)
         case .clear:
             scheduledWakeUnknown = false
+            attemptedWakeRepairFor = nil
             setScheduledWake(nil)
             guard scheduledWakeSupport == .supported, !scheduledWakeBusy else { return }
             let generation = beginScheduledWakeWrite()
@@ -948,6 +971,7 @@ final class AppState: ObservableObject {
     /// Schedule a wake `minutes` from now, replacing any wake already set.
     func scheduleWake(minutes: Int) {
         guard scheduledWakeSupport == .supported else { return }
+        attemptedWakeRepairFor = nil
         writeScheduledWake(ScheduledWake.wakeDate(from: Date(), minutes: minutes), quiet: false)
     }
 
@@ -961,8 +985,13 @@ final class AppState: ObservableObject {
                 // asked for — the system decides what got scheduled.
                 self.scheduledWakeUnknown = false
                 self.setScheduledWake(confirmed)
+            } else if quiet {
+                // A failed repair says nothing the user asked to hear, and
+                // re-reading here is what would close the loop back onto
+                // another repair. The 30-second poll picks it up instead.
+                return
             } else {
-                if !quiet { self.scheduledWakeError = error ?? "Couldn’t set the wake time." }
+                self.scheduledWakeError = error ?? "Couldn’t set the wake time."
                 // The write failed, so we know nothing reliable about the
                 // schedule — it may have landed anyway. Go and look.
                 self.refreshScheduledWake()
@@ -977,6 +1006,7 @@ final class AppState: ObservableObject {
         guard scheduledWakeSupport == .supported else { return }
         let generation = beginScheduledWakeWrite()
         scheduledWakeError = nil
+        attemptedWakeRepairFor = nil
         helper.cancelScheduledWake { [weak self] ok, error in
             guard let self, self.finishScheduledWakeWrite(generation) else { return }
             if ok {
@@ -1022,14 +1052,19 @@ final class AppState: ObservableObject {
 
     private func scheduledWakeTick() {
         guard let date = scheduledWakeDate else { return }
-        // Reaching the deadline means powerd has fired the event (or is about
-        // to). Don't assume it's gone — go and read, which also clears the
-        // countdown once the system has actually let go of it.
-        if Date() >= date {
+        guard Date() < date else {
+            // The moment has arrived, so there is no countdown left to draw and
+            // no reason to keep a one-second timer alive. Stop it before the
+            // read: if the schedule turns out to be unreadable, `.unknown`
+            // leaves the date in place, and a timer still running would then
+            // poll IOKit every second for as long as that lasted. The ordinary
+            // 30-second tick notices the event going away.
+            scheduledWakeTimer?.invalidate()
+            scheduledWakeTimer = nil
             refreshScheduledWake()
-        } else {
-            refreshScheduledWakeRemaining()
+            return
         }
+        refreshScheduledWakeRemaining()
     }
 
     private func refreshScheduledWakeRemaining() {

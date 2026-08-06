@@ -268,6 +268,100 @@ final class ScheduledWakeTests: XCTestCase {
         XCTAssertTrue(ScheduledWake.surplusWakeDates(events: events, ownerID: owner, now: t0).isEmpty)
     }
 
+    // MARK: reconcile — what the app does with what it read
+
+    /// An unreadable schedule must not turn into "nothing scheduled". This is
+    /// the whole reason the reader returns an optional.
+    func testReconcileUnknownWhenEventsCouldNotBeRead() {
+        XCTAssertEqual(ScheduledWake.reconcile(events: nil, ownerID: owner, now: t0), .unknown)
+    }
+
+    func testReconcileNoneForEmptySchedule() {
+        XCTAssertEqual(ScheduledWake.reconcile(events: [], ownerID: owner, now: t0), .none)
+    }
+
+    /// A schedule full of other people's events is, for us, an empty one — and
+    /// crucially not something to "repair".
+    func testReconcileNoneWhenOnlyForeignEventsExist() {
+        XCTAssertEqual(ScheduledWake.reconcile(events: systemEvents(now: t0),
+                                               ownerID: owner, now: t0), .none)
+    }
+
+    func testReconcilePendingForSingleFutureEvent() {
+        let date = t0.addingTimeInterval(900)
+        let events = systemEvents(now: t0) + [event(at: date, owner: owner)]
+        XCTAssertEqual(ScheduledWake.reconcile(events: events, ownerID: owner, now: t0),
+                       .pending(date))
+    }
+
+    func testReconcileRepairsDuplicatesKeepingEarliest() {
+        let sooner = t0.addingTimeInterval(600)
+        let later = t0.addingTimeInterval(1800)
+        let events = [event(at: later, owner: owner), event(at: sooner, owner: owner)]
+        XCTAssertEqual(ScheduledWake.reconcile(events: events, ownerID: owner, now: t0),
+                       .repair(keep: sooner))
+    }
+
+    /// Debris alongside a good event must not cost us the good event.
+    func testReconcileRepairsWhenStaleSitsBesidePending() {
+        let pending = t0.addingTimeInterval(900)
+        let events = [event(at: t0.addingTimeInterval(-300), owner: owner),
+                      event(at: pending, owner: owner)]
+        XCTAssertEqual(ScheduledWake.reconcile(events: events, ownerID: owner, now: t0),
+                       .repair(keep: pending))
+    }
+
+    func testReconcileClearsWhenOnlyStaleRemains() {
+        let events = [event(at: t0.addingTimeInterval(-300), owner: owner)]
+        XCTAssertEqual(ScheduledWake.reconcile(events: events, ownerID: owner, now: t0), .clear)
+    }
+
+    /// A just-fired event is powerd's business for another moment. Neither show
+    /// it nor race the system to delete it.
+    func testReconcileNoneForJustFiredEventInsideGrace() {
+        let events = [event(at: t0.addingTimeInterval(-30), owner: owner)]
+        XCTAssertEqual(ScheduledWake.reconcile(events: events, ownerID: owner, now: t0), .none)
+    }
+
+    /// Debris belonging to macOS is not debris we clean up.
+    func testReconcileIgnoresForeignStaleEvents() {
+        let events = [event(at: t0.addingTimeInterval(-9999),
+                            owner: "com.apple.alarm.user-invisible-something")]
+        XCTAssertEqual(ScheduledWake.reconcile(events: events, ownerID: owner, now: t0), .none)
+    }
+
+    // MARK: supportState — three different ways to be unavailable
+
+    func testSupportStateHelperNotInstalled() {
+        XCTAssertEqual(ScheduledWake.supportState(helperInstalled: false, version: "0.2.0"),
+                       .helperNotInstalled)
+        XCTAssertEqual(ScheduledWake.supportState(helperInstalled: false, version: nil),
+                       .helperNotInstalled)
+    }
+
+    func testSupportStateSupportedForCurrentHelper() {
+        XCTAssertEqual(ScheduledWake.supportState(helperInstalled: true, version: "0.2.0"),
+                       .supported)
+        XCTAssertEqual(ScheduledWake.supportState(helperInstalled: true, version: "1.4.0"),
+                       .supported)
+    }
+
+    func testSupportStateOutdatedForOlderHelper() {
+        XCTAssertEqual(ScheduledWake.supportState(helperInstalled: true, version: "0.1.0"),
+                       .outdated)
+    }
+
+    /// A helper that didn't answer is not an old helper, and telling the user
+    /// to reinstall would send them to fix the wrong thing.
+    func testSupportStateUnreachableWhenVersionMissingOrUnreadable() {
+        XCTAssertEqual(ScheduledWake.supportState(helperInstalled: true, version: nil),
+                       .unreachable)
+        XCTAssertEqual(ScheduledWake.supportState(helperInstalled: true, version: "garbage"),
+                       .unreachable)
+        XCTAssertEqual(ScheduledWake.supportState(helperInstalled: true, version: ""),
+                       .unreachable)
+    }
+
     // MARK: Helper capability gate
 
     func testHelperSupportsScheduledWakeAcceptsEqualAndNewer() {

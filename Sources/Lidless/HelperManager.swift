@@ -101,6 +101,39 @@ final class HelperManager {
         remote({ _ in })?.heartbeat { _ in }
     }
 
+    /// Schedule a one-shot wake. `completion` gets the date the helper read back
+    /// out of the system, or nil plus a message.
+    func scheduleWake(at date: Date, completion: @escaping (Date?, String?) -> Void) {
+        var confirmed: Date?
+        callWithTimeout(completion: { ok, err in completion(ok ? confirmed : nil, err) }) { proxy, done in
+            proxy.scheduleWake(at: date) { date, err in
+                confirmed = date
+                done(date != nil, err)
+            }
+        }
+    }
+
+    func cancelScheduledWake(completion: @escaping (Bool, String?) -> Void) {
+        callWithTimeout(completion: completion) { proxy, done in
+            proxy.cancelScheduledWake { ok, err in done(ok, err) }
+        }
+    }
+
+    /// The helper's version string, or nil if it couldn't be reached.
+    ///
+    /// Nil is "we don't know", not "it's old". A helper that never answers and
+    /// a helper that predates a feature are different problems and the UI says
+    /// different things about them.
+    func fetchVersion(completion: @escaping (String?) -> Void) {
+        var reported: String?
+        callWithTimeout(timeout: 5, completion: { ok, _ in completion(ok ? reported : nil) }) { proxy, done in
+            proxy.version { version in
+                reported = version
+                done(true, nil)
+            }
+        }
+    }
+
     /// True if the daemon answers an XPC call, false if it can't be reached
     /// (connection error or no reply within the timeout). Used to detect a
     /// registered-but-unlaunchable helper after an app update.

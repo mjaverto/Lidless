@@ -94,6 +94,14 @@ struct MenuContent: View {
                 .padding(.horizontal, hInset)
                 .padding(.top, 12)
 
+            ScheduledWakeSection()
+                .padding(.horizontal, hInset)
+                .padding(.top, 12)
+
+            Divider()
+                .padding(.horizontal, hInset)
+                .padding(.top, 12)
+
             FooterActions()
                 .padding(.horizontal, hInset)
                 .padding(.bottom, 14)
@@ -101,7 +109,108 @@ struct MenuContent: View {
         .frame(width: 360)
         // The popover is the moment the user actually looks at the toggle, so
         // it's the moment it most needs to be true.
-        .onAppear { state.refreshState() }
+        .onAppear {
+            state.refreshState()
+            state.refreshScheduledWake()
+        }
+    }
+}
+
+// MARK: - Scheduled wake
+
+/// "Wake my Mac in N minutes" — an action, not a preference, so it lives in the
+/// popover next to the toggle rather than in Settings with the auto-off timer.
+///
+/// The two are easy to confuse and worth keeping apart: auto-off stops keeping
+/// the Mac awake, while this wakes a sleeping Mac up. The countdown here is
+/// held by the system, so it survives quitting the app; auto-off's does not.
+private struct ScheduledWakeSection: View {
+    @EnvironmentObject var state: AppState
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            SettingRow(title: "Wake my Mac in") {
+                Menu {
+                    ForEach(ScheduledWake.presetMinutes, id: \.self) { minutes in
+                        Button(ScheduledWake.optionLabel(minutes: minutes)) {
+                            state.scheduleWake(minutes: minutes)
+                        }
+                    }
+                } label: {
+                    Text(state.scheduledWakeDate == nil ? "Choose…" : "Change…")
+                }
+                .menuStyle(.borderlessButton)
+                .fixedSize()
+                .disabled(state.scheduledWakeSupport != .supported || state.scheduledWakeBusy)
+            }
+
+            if let date = state.scheduledWakeDate {
+                HStack(spacing: 8) {
+                    // The absolute time leads. It's what the system actually
+                    // holds — an instant, not a duration — and it stays true if
+                    // the clock changes underneath us.
+                    Label(scheduledLabel(date), systemImage: "alarm")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                    Spacer(minLength: 8)
+                    Button("Cancel") { state.cancelScheduledWake() }
+                        .font(.callout)
+                        .disabled(state.scheduledWakeSupport != .supported || state.scheduledWakeBusy)
+                }
+            }
+
+            if let message = unavailableMessage {
+                Text(message)
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else if state.scheduledWakeDate != nil {
+                // Say this plainly rather than let the feature look broken. With
+                // the lid shut the Mac may come up as a background wake with the
+                // display still off, and that's the machine's call, not ours.
+                Text("With the lid closed this may be a background wake — the display can stay off.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            if state.scheduledWakeUnknown {
+                Label("Couldn’t read the wake schedule.", systemImage: "questionmark.circle.fill")
+                    .font(.callout)
+                    .foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            if let error = state.scheduledWakeError {
+                Label(error, systemImage: "info.circle")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .padding(.bottom, 2)
+    }
+
+    private func scheduledLabel(_ date: Date) -> String {
+        let time = date.formatted(date: .omitted, time: .shortened)
+        return state.scheduledWakeRemaining.isEmpty
+            ? "Waking at \(time)"
+            : "Waking at \(time) · \(state.scheduledWakeRemaining)"
+    }
+
+    /// Each way of being unavailable gets its own sentence. "Reinstall the
+    /// helper" is the wrong instruction when the daemon simply isn't answering.
+    private var unavailableMessage: String? {
+        switch state.scheduledWakeSupport {
+        case .supported:
+            return nil
+        case .helperNotInstalled:
+            return "Install the background helper in Settings to schedule a wake."
+        case .outdated:
+            return "Reinstall the background helper in Settings to schedule a wake."
+        case .unreachable:
+            return "The background helper isn’t responding, so a wake can’t be scheduled."
+        }
     }
 }
 

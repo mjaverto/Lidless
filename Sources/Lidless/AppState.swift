@@ -66,6 +66,28 @@ final class AppState: ObservableObject {
     /// Whether the user has finished first-run onboarding (persisted).
     @Published var onboardingComplete = false
 
+    // MARK: Scheduled wake
+
+    /// When the Mac is set to wake itself, or nil when nothing is scheduled.
+    ///
+    /// Not persisted anywhere: powerd holds the event, so powerd is the source
+    /// of truth. That's what lets the countdown survive a quit, a crash, or a
+    /// reboot without any state of our own to keep in step.
+    @Published private(set) var scheduledWakeDate: Date?
+    /// True when the schedule couldn't be read. Distinct from "nothing
+    /// scheduled" — the UI must not turn an unreadable answer into a claim.
+    @Published private(set) var scheduledWakeUnknown = false
+    /// Countdown like `12:41`, shown beside the absolute wake time.
+    @Published private(set) var scheduledWakeRemaining = ""
+    /// Whether the controls are usable, and if not, why.
+    @Published private(set) var scheduledWakeSupport: ScheduledWake.SupportState = .helperNotInstalled
+    /// Its own channel, so a wake failure can't wipe a keep-awake safety note.
+    @Published var scheduledWakeError: String?
+
+    /// True while a schedule/cancel is in flight, so the UI can stop the user
+    /// firing a second one at the helper before the first has answered.
+    @Published private(set) var scheduledWakeBusy = false
+
     private let helper = HelperManager()
     /// Reads the flag on every path — `pmset -g` needs no privileges — and also
     /// writes it when the helper isn't installed.
@@ -97,6 +119,14 @@ final class AppState: ObservableObject {
     private var batteryTimer: Timer?
     private var heartbeatTimer: Timer?
     private var autoOffTimer: Timer?
+    /// Its own timer, not shared with `autoOffTimer`: the two countdowns have
+    /// unrelated lifetimes — one dies with the app, the other outlives it — and
+    /// driving them from one timer would tie those lifetimes together.
+    private var scheduledWakeTimer: Timer?
+    /// Rejects helper replies that a newer schedule/cancel has superseded.
+    private var scheduledWakeGeneration = 0
+    private var didWakeObserver: NSObjectProtocol?
+    private var clockChangeObserver: NSObjectProtocol?
 
     /// Last-known "helper is usable" value, so we can detect it flipping on at
     /// runtime (right after the user approves it) and prompt a restart.
@@ -151,6 +181,25 @@ final class AppState: ObservableObject {
                 self?.refreshState()
             }
         }
+        // Adopt whatever wake powerd is already holding — from a previous run,
+        // or from this app before it was quit. Nothing about it was persisted
+        // by us, so this read *is* how the countdown comes back.
+        refreshScheduledWakeSupport()
+        refreshScheduledWake()
+        // The Mac waking is the moment a scheduled wake either fired or didn't,
+        // so it's the moment the schedule is most likely to have changed under
+        // us. A clock change doesn't move the event — it's an absolute instant —
+        // but it does make the rendered countdown wrong until we redraw it.
+        didWakeObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didWakeNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in self?.refreshScheduledWake() }
+        }
+        clockChangeObserver = NotificationCenter.default.addObserver(
+            forName: NSNotification.Name.NSSystemClockDidChange, object: nil, queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in self?.refreshScheduledWake() }
+        }
         // First launch shows onboarding once (persisted so closing it early won't
         // re-nag). A relaunch triggered mid-onboarding resumes the flow instead.
         if store.loadResumeOnboarding() {
@@ -166,6 +215,12 @@ final class AppState: ObservableObject {
     deinit {
         if let didBecomeActiveObserver {
             NotificationCenter.default.removeObserver(didBecomeActiveObserver)
+        }
+        if let didWakeObserver {
+            NSWorkspace.shared.notificationCenter.removeObserver(didWakeObserver)
+        }
+        if let clockChangeObserver {
+            NotificationCenter.default.removeObserver(clockChangeObserver)
         }
     }
 
@@ -411,6 +466,7 @@ final class AppState: ObservableObject {
         helperWasUsable = usingHelper
         guard !wasUsable, usingHelper else { return }
         refreshState()
+        refreshScheduledWakeSupport()
         promptRestartAfterHelperEnabled()
     }
 
@@ -744,6 +800,10 @@ final class AppState: ObservableObject {
             guard let self else { return }
             self.refreshHelperStatus()
             self.storeCurrentHelperBuild()
+            // A reinstall is exactly how an outdated helper becomes a current
+            // one, so re-ask what it is now rather than leaving the wake
+            // controls disabled until the next launch.
+            self.refreshScheduledWakeSupport()
             if let error {
                 self.lastError = error.localizedDescription
             } else if self.helper.requiresApproval {
@@ -814,6 +874,171 @@ final class AppState: ObservableObject {
         autoOffRemaining = AutoOff.formatCountdown(AutoOff.remaining(deadline: deadline, now: Date()))
     }
 
+    // MARK: Scheduled wake
+
+    /// The owner id our wake events carry. Derived from this app's bundle id,
+    /// which is how the `.dev` build and the release build stay out of each
+    /// other's schedule. Must agree with the helper's own derivation.
+    private var wakeOwnerID: String {
+        ScheduledWake.ownerID(appBundleID: Bundle.main.bundleIdentifier ?? "com.nghialuong.lidless")
+    }
+
+    /// Ask the helper what version it is, and decide whether the controls work.
+    ///
+    /// Everyone upgrading into this feature already has an older helper running
+    /// whose exported object has no `scheduleWake:` — calling it doesn't fail,
+    /// it just never replies, so without this gate every attempt would be a
+    /// six-second wait ending in an apology.
+    private func refreshScheduledWakeSupport() {
+        guard helperInstalled else {
+            scheduledWakeSupport = .helperNotInstalled
+            return
+        }
+        helper.fetchVersion { [weak self] version in
+            guard let self else { return }
+            self.scheduledWakeSupport = ScheduledWake.supportState(helperInstalled: self.helperInstalled,
+                                                                    version: version)
+        }
+    }
+
+    /// Read the system's power schedule and bring the UI into step with it.
+    ///
+    /// Also repairs what it finds. Leftovers happen — an event powerd hasn't
+    /// purged, or duplicates from a write interrupted between its sweep and its
+    /// schedule — and the repair is expressed with the same two calls the
+    /// feature already has, because `scheduleWake` sweeps ours before writing.
+    func refreshScheduledWake() {
+        let action = ScheduledWake.reconcile(events: WakeScheduleReader.copyEvents(),
+                                             ownerID: wakeOwnerID,
+                                             now: Date())
+        switch action {
+        case .unknown:
+            // Say nothing about the schedule we couldn't read. Keeping the last
+            // known date and flagging it unconfirmed is honest; replacing it
+            // with "no wake scheduled" would be a claim we have no basis for.
+            scheduledWakeUnknown = true
+        case .none:
+            scheduledWakeUnknown = false
+            setScheduledWake(nil)
+        case .pending(let date):
+            scheduledWakeUnknown = false
+            setScheduledWake(date)
+        case .repair(let keep):
+            scheduledWakeUnknown = false
+            setScheduledWake(keep)
+            // Re-assert rather than reach for a cancel-these-dates call: this
+            // ends with exactly one event, at the time now on screen.
+            guard scheduledWakeSupport == .supported, !scheduledWakeBusy else { return }
+            writeScheduledWake(keep, quiet: true)
+        case .clear:
+            scheduledWakeUnknown = false
+            setScheduledWake(nil)
+            guard scheduledWakeSupport == .supported, !scheduledWakeBusy else { return }
+            let generation = beginScheduledWakeWrite()
+            helper.cancelScheduledWake { [weak self] _, _ in
+                // Quiet: this is housekeeping the user never asked for, and a
+                // failure means only that some debris is still sitting there —
+                // nothing they could act on, and nothing that affects a wake
+                // they're waiting for.
+                self?.finishScheduledWakeWrite(generation)
+            }
+        }
+    }
+
+    /// Schedule a wake `minutes` from now, replacing any wake already set.
+    func scheduleWake(minutes: Int) {
+        guard scheduledWakeSupport == .supported else { return }
+        writeScheduledWake(ScheduledWake.wakeDate(from: Date(), minutes: minutes), quiet: false)
+    }
+
+    private func writeScheduledWake(_ date: Date, quiet: Bool) {
+        let generation = beginScheduledWakeWrite()
+        if !quiet { scheduledWakeError = nil }
+        helper.scheduleWake(at: date) { [weak self] confirmed, error in
+            guard let self, self.finishScheduledWakeWrite(generation) else { return }
+            if let confirmed {
+                // The date the helper read back out of powerd, not the one we
+                // asked for — the system decides what got scheduled.
+                self.scheduledWakeUnknown = false
+                self.setScheduledWake(confirmed)
+            } else {
+                if !quiet { self.scheduledWakeError = error ?? "Couldn’t set the wake time." }
+                // The write failed, so we know nothing reliable about the
+                // schedule — it may have landed anyway. Go and look.
+                self.refreshScheduledWake()
+            }
+        }
+    }
+
+    /// Remove the scheduled wake. Only ever from the user pressing Cancel —
+    /// quitting the app deliberately leaves the wake in place, the same way
+    /// quitting a clock app doesn't cancel its alarms.
+    func cancelScheduledWake() {
+        guard scheduledWakeSupport == .supported else { return }
+        let generation = beginScheduledWakeWrite()
+        scheduledWakeError = nil
+        helper.cancelScheduledWake { [weak self] ok, error in
+            guard let self, self.finishScheduledWakeWrite(generation) else { return }
+            if ok {
+                self.scheduledWakeUnknown = false
+                self.setScheduledWake(nil)
+            } else {
+                self.scheduledWakeError = error ?? "Couldn’t clear the wake time."
+                self.refreshScheduledWake()
+            }
+        }
+    }
+
+    /// Claim the write slot and invalidate any reply still travelling.
+    private func beginScheduledWakeWrite() -> Int {
+        scheduledWakeGeneration += 1
+        scheduledWakeBusy = true
+        return scheduledWakeGeneration
+    }
+
+    /// Returns false if this reply has been superseded, in which case the
+    /// caller must not touch state — a newer request owns it now.
+    @discardableResult
+    private func finishScheduledWakeWrite(_ generation: Int) -> Bool {
+        guard generation == scheduledWakeGeneration else { return false }
+        scheduledWakeBusy = false
+        return true
+    }
+
+    /// Adopt a wake date and start or stop the countdown to match.
+    private func setScheduledWake(_ date: Date?) {
+        scheduledWakeDate = date
+        scheduledWakeTimer?.invalidate()
+        scheduledWakeTimer = nil
+        guard date != nil else {
+            scheduledWakeRemaining = ""
+            return
+        }
+        refreshScheduledWakeRemaining()
+        scheduledWakeTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
+            Task { @MainActor in self?.scheduledWakeTick() }
+        }
+    }
+
+    private func scheduledWakeTick() {
+        guard let date = scheduledWakeDate else { return }
+        // Reaching the deadline means powerd has fired the event (or is about
+        // to). Don't assume it's gone — go and read, which also clears the
+        // countdown once the system has actually let go of it.
+        if Date() >= date {
+            refreshScheduledWake()
+        } else {
+            refreshScheduledWakeRemaining()
+        }
+    }
+
+    private func refreshScheduledWakeRemaining() {
+        guard let date = scheduledWakeDate else { scheduledWakeRemaining = ""; return }
+        scheduledWakeRemaining = ScheduledWake.formatCountdown(
+            ScheduledWake.remaining(until: date, now: Date())
+        )
+    }
+
     // MARK: Battery + safety guard
 
     func tick() {
@@ -830,6 +1055,9 @@ final class AppState: ObservableObject {
         // polling only when we think it's on would structurally miss the case
         // where it was turned on behind our back.
         refreshState()
+        // Cheap (a single unprivileged IOKit read) and it's what notices a wake
+        // that fired, or one set from another copy of the app.
+        refreshScheduledWake()
         if settings.autoEnableWhenCharging {
             reconcile()             // refreshes the battery sample itself
         } else {

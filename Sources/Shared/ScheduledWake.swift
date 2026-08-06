@@ -189,7 +189,76 @@ public enum ScheduledWake {
         Array(ownedWakeDates(events: events, ownerID: ownerID).filter { $0 > now }.dropFirst())
     }
 
+    // MARK: Reconciling against the system
+
+    /// What the app should do having read the system's power schedule.
+    public enum ReconcileAction: Equatable {
+        /// The schedule couldn't be read. Keep showing whatever was last known
+        /// and say the state is unconfirmed — never "no wake scheduled".
+        case unknown
+        /// We hold no wake, and there's nothing to tidy.
+        case none
+        /// Exactly one wake of ours, in the future. Show it.
+        case pending(Date)
+        /// A wake of ours is pending, but there's debris alongside it —
+        /// duplicates, or an event powerd should have purged. Re-assert the
+        /// invariant by scheduling this date again: `scheduleWake` sweeps ours
+        /// before writing, so one call both cleans up and keeps the right wake.
+        case repair(keep: Date)
+        /// Only debris, nothing pending. Clear ours.
+        case clear
+    }
+
+    /// Decide what to do with the schedule as read.
+    ///
+    /// Takes the optional straight from the reader so the "couldn't read" case
+    /// is handled here rather than at each call site, where it is one `??  []`
+    /// away from being silently reported as an empty schedule.
+    public static func reconcile(events: [[String: Any]]?,
+                                 ownerID: String,
+                                 now: Date,
+                                 grace: TimeInterval = 60) -> ReconcileAction {
+        guard let events else { return .unknown }
+        let pending = pendingWake(events: events, ownerID: ownerID, now: now)
+        let debris = !staleWakeDates(events: events, ownerID: ownerID, now: now, grace: grace).isEmpty
+            || !surplusWakeDates(events: events, ownerID: ownerID, now: now).isEmpty
+        switch (pending, debris) {
+        case (let date?, true):  return .repair(keep: date)
+        case (let date?, false): return .pending(date)
+        case (nil, true):        return .clear
+        case (nil, false):       return .none
+        }
+    }
+
     // MARK: Helper capability
+
+    /// Whether the scheduled-wake controls can be used, and if not, why.
+    ///
+    /// Four states rather than enabled/disabled because the three ways of being
+    /// disabled need different words. Telling someone to reinstall their helper
+    /// when the real problem is that the daemon isn't answering sends them to
+    /// do the wrong thing.
+    public enum SupportState: Equatable {
+        /// No helper installed. Scheduling a wake needs root, and unlike
+        /// keep-awake there is no admin-prompt fallback for it.
+        case helperNotInstalled
+        /// Installed, but it didn't tell us its version — so we don't know.
+        case unreachable
+        /// Installed and answering, but predates these XPC methods.
+        case outdated
+        case supported
+    }
+
+    /// `version` is nil when the helper couldn't be reached at all.
+    public static func supportState(helperInstalled: Bool, version: String?) -> SupportState {
+        guard helperInstalled else { return .helperNotInstalled }
+        guard let version else { return .unreachable }
+        switch helperSupportsScheduledWake(version: version) {
+        case true?:  return .supported
+        case false?: return .outdated
+        case nil:    return .unreachable
+        }
+    }
 
     /// First helper version that implements the scheduled-wake XPC methods.
     public static let minimumHelperVersion = "0.2.0"

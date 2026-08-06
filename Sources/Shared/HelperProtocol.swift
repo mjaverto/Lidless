@@ -36,4 +36,33 @@ public enum LidlessHelper {
 
     /// Helper version string, for a connection sanity check.
     func version(withReply reply: @escaping (String) -> Void)
+
+    /// Schedule a one-shot wake, replacing any wake this app already has.
+    ///
+    /// Replies with the date the helper **read back** out of the system after
+    /// writing it, not the date it was handed: powerd stores these at one-second
+    /// resolution and is the thing that decides what got scheduled. A reply of
+    /// `(date, nil)` therefore means "this is on the machine, verified"; `(nil,
+    /// message)` means it isn't. Contrast `setKeepAwake`, which has no value to
+    /// report and so answers with a plain success flag.
+    ///
+    /// The owner id is **not** a parameter. The helper runs as root and this
+    /// call leads to cancelling power events; letting a caller name which owner
+    /// to act on would hand any client of the Mach service the ability to
+    /// delete power events belonging to macOS or to the user. The helper
+    /// derives its own id from `LIDLESS_MACH_LABEL` instead.
+    func scheduleWake(at date: Date, withReply reply: @escaping (Date?, String?) -> Void)
+
+    /// Remove every wake this app scheduled, and nothing else. Idempotent —
+    /// succeeds when there was nothing to remove.
+    ///
+    /// These two calls are the whole interface, and between them they can
+    /// express every repair the app needs. Leftovers the app spots while
+    /// reconciling — a stale event powerd didn't purge, a duplicate from an
+    /// interrupted write — are cleared by re-asserting the invariant with
+    /// `scheduleWake(at:)` (which sweeps ours before writing) when a wake
+    /// should still be pending, or by `cancelScheduledWake` when none should.
+    /// There is no "cancel these specific dates" call because there is nothing
+    /// it could do that those two can't.
+    func cancelScheduledWake(withReply reply: @escaping (Bool, String?) -> Void)
 }

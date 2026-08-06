@@ -58,6 +58,10 @@ targets:
           destination: executables
       - package: Sparkle
         product: Sparkle
+      # Scheduled wake reads the system power schedule via
+      # IOPMCopyScheduledPowerEvents. Declared rather than left to Swift's
+      # implicit auto-link: this file is the spec that gets reviewed.
+      - sdk: IOKit.framework
     postBuildScripts:
       # Generate the privileged helper's LaunchDaemon plist from the app's bundle
       # id so the Release and `.dev` builds register isolated daemons. Runs before
@@ -113,6 +117,10 @@ targets:
           PRODUCT_BUNDLE_IDENTIFIER: com.nghialuong.lidless.dev.helper
         Release:
           PRODUCT_BUNDLE_IDENTIFIER: com.nghialuong.lidless.helper
+    dependencies:
+      # IOPMSchedulePowerEvent / IOPMCancelScheduledPowerEvent — the root-only
+      # half of scheduled wake.
+      - sdk: IOKit.framework
 
   LidlessTests:
     type: bundle.unit-test
@@ -128,6 +136,9 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.nghialuong.lidlessTests
         GENERATE_INFOPLIST_FILE: YES
+    dependencies:
+      # Sources/Shared imports IOKit.pwr_mgt for the power-event key constants.
+      - sdk: IOKit.framework
 
 schemes:
   Lidless:

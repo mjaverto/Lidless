@@ -1093,6 +1093,16 @@ final class AppState: ObservableObject {
         // Cheap (a single unprivileged IOKit read) and it's what notices a wake
         // that fired, or one set from another copy of the app.
         refreshScheduledWake()
+        // Re-ask whenever we don't have a good answer. The probe at launch can
+        // miss — a login-item start while the machine is still busy, or a lid
+        // closed the moment the app opens, which is this app's whole audience —
+        // and `recheckHelper` only re-probes on the unusable→usable edge, which
+        // by then has already passed. Without this a single early timeout would
+        // read as "the helper isn't responding" for the rest of the session
+        // while that same helper answers every heartbeat.
+        if helperInstalled, scheduledWakeSupport != .supported {
+            refreshScheduledWakeSupport()
+        }
         if settings.autoEnableWhenCharging {
             reconcile()             // refreshes the battery sample itself
         } else {

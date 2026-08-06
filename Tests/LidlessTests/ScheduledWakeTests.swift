@@ -406,6 +406,46 @@ final class ScheduledWakeTests: XCTestCase {
         XCTAssertNil(ScheduledWake.helperSupportsScheduledWake(version: "٠.٢.٠"))
     }
 
+    // MARK: Code signing requirement — what stands between the app and anyone else
+
+    func testAppBundleIDIsInverseOfLabel() {
+        for bundleID in ["com.nghialuong.lidless", "com.nghialuong.lidless.dev"] {
+            let label = LidlessHelper.label(appBundleID: bundleID)
+            XCTAssertEqual(LidlessHelper.appBundleID(fromLabel: label), bundleID)
+        }
+    }
+
+    func testAppBundleIDLeavesUnexpectedLabelAlone() {
+        XCTAssertEqual(LidlessHelper.appBundleID(fromLabel: "com.example.thing"),
+                       "com.example.thing")
+    }
+
+    /// All three clauses have to be there. Dropping the identifier lets any of
+    /// our binaries in; dropping the anchor lets a self-signed impostor claim
+    /// the identifier; dropping the team lets someone else's Apple-signed app in.
+    func testCodeSigningRequirementPinsIdentityAnchorAndTeam() {
+        let requirement = LidlessHelper.codeSigningRequirement(appBundleID: "com.nghialuong.lidless")
+        XCTAssertTrue(requirement.contains("identifier \"com.nghialuong.lidless\""))
+        XCTAssertTrue(requirement.contains("anchor apple generic"))
+        XCTAssertTrue(requirement.contains("certificate leaf[subject.OU] = \"\(LidlessHelper.teamID)\""))
+    }
+
+    /// The `.dev` build and the release build must not satisfy each other's
+    /// requirement — that separation is the whole reason they have distinct ids.
+    func testCodeSigningRequirementDiffersBetweenDebugAndReleaseIdentifiers() {
+        XCTAssertNotEqual(LidlessHelper.codeSigningRequirement(appBundleID: "com.nghialuong.lidless"),
+                          LidlessHelper.codeSigningRequirement(appBundleID: "com.nghialuong.lidless.dev"))
+    }
+
+    /// A malformed requirement throws an Objective-C exception at the point it
+    /// is set, which in the helper means the daemon dies on every connection.
+    /// Keep it to one line with no stray newlines.
+    func testCodeSigningRequirementIsASingleLine() {
+        let requirement = LidlessHelper.codeSigningRequirement(appBundleID: "com.nghialuong.lidless")
+        XCTAssertFalse(requirement.contains("\n"))
+        XCTAssertFalse(requirement.isEmpty)
+    }
+
     // MARK: Shared presets and formatting
 
     func testEventTypeIsWakeNotWakeOrPowerOn() {

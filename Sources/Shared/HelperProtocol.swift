@@ -16,6 +16,43 @@ public enum LidlessHelper {
 
     /// Fallback used only if the app bundle id / env var is unavailable.
     public static let fallbackLabel = "com.nghialuong.lidless.helper"
+
+    /// The app bundle id a helper label was derived from — the inverse of
+    /// `label(appBundleID:)`.
+    public static func appBundleID(fromLabel label: String) -> String {
+        let suffix = ".helper"
+        guard label.hasSuffix(suffix) else { return label }
+        return String(label.dropLast(suffix.count))
+    }
+
+    /// The Apple Developer Team ID both the app and the helper are signed with.
+    public static let teamID = "TAFDRXJZSR"
+
+    /// Code signing requirement the helper demands of anything connecting to it.
+    ///
+    /// The Mach service a `SMAppService` daemon registers is reachable by any
+    /// process on the machine, so without this every local program can ask a
+    /// root daemon to do root things. That was survivable while the only verb
+    /// was keep-awake — it dies with the app, and the watchdog clears it within
+    /// 90 seconds either way — but a scheduled wake outlives the app by design
+    /// and no watchdog touches it, so "any process can set one" is a different
+    /// proposition.
+    ///
+    /// Pins both the identity (this app, not merely something of ours) and the
+    /// team, and requires an Apple-issued chain so a self-signed binary
+    /// claiming the same identifier doesn't match. `anchor apple generic`
+    /// covers Developer ID and Apple Development certificates alike, so a
+    /// locally-built `.dev` app satisfies this the same way a released one does.
+    ///
+    /// Checked per message against the peer's audit token, which is what makes
+    /// it free of the PID-reuse race that a `processIdentifier`-based check has.
+    public static func codeSigningRequirement(appBundleID: String) -> String {
+        """
+        identifier "\(appBundleID)" \
+        and anchor apple generic \
+        and certificate leaf[subject.OU] = "\(teamID)"
+        """
+    }
 }
 
 /// XPC interface implemented by the root helper and called by the app.

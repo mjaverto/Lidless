@@ -3,8 +3,23 @@ import Foundation
 final class HelperListenerDelegate: NSObject, NSXPCListenerDelegate {
     private let service = HelperService()
 
+    /// The app this helper belongs to, from the label launchd started us with.
+    private let appBundleID = LidlessHelper.appBundleID(
+        fromLabel: ProcessInfo.processInfo.environment[LidlessHelper.machLabelEnvKey]
+            ?? LidlessHelper.fallbackLabel
+    )
+
     func listener(_ listener: NSXPCListener,
                   shouldAcceptNewConnection newConnection: NSXPCConnection) -> Bool {
+        // Demand the peer be our app before handing it a root-privileged
+        // object. The Mach service is reachable by anything running on the
+        // machine, so this is the only thing standing between "the app asked"
+        // and "some process asked". Set before `resume()`, as the API requires;
+        // messages from anything that doesn't match invalidate the connection
+        // rather than reaching the exported object.
+        newConnection.setCodeSigningRequirement(
+            LidlessHelper.codeSigningRequirement(appBundleID: appBundleID)
+        )
         newConnection.exportedInterface = NSXPCInterface(with: LidlessHelperProtocol.self)
         newConnection.exportedObject = service
         newConnection.resume()

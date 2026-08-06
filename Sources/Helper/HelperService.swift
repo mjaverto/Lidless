@@ -69,6 +69,11 @@ final class HelperService: NSObject, LidlessHelperProtocol {
 
     func scheduleWake(at date: Date, withReply reply: @escaping (Date?, String?) -> Void) {
         queue.async {
+            // Drop any sub-second part before writing. This is an entry point,
+            // so it can't assume the caller already did — and a fractional date
+            // would schedule successfully, come back from powerd rounded, and
+            // then fail the check below for a wake that really is on the Mac.
+            let target = ScheduledWake.wholeSecond(date)
             // Clear ours first, then write. The ordering is what makes an
             // interrupted call safe: if this process dies between the two
             // steps the machine is left with no wake at all, which is a Mac
@@ -79,7 +84,7 @@ final class HelperService: NSObject, LidlessHelperProtocol {
                 reply(nil, error)
                 return
             }
-            let status = WakeScheduler.schedule(date, ownerID: self.wakeOwnerID)
+            let status = WakeScheduler.schedule(target, ownerID: self.wakeOwnerID)
             guard status == kIOReturnSuccess else {
                 reply(nil, WakeScheduler.describe(status))
                 return
@@ -92,11 +97,18 @@ final class HelperService: NSObject, LidlessHelperProtocol {
                 return
             }
             let ours = ScheduledWake.ownedWakeDates(events: events, ownerID: self.wakeOwnerID)
-            guard ours == [date] else {
+            // Exactly one, at the time we asked for — the invariant this whole
+            // method exists to maintain, checked against the machine rather
+            // than assumed from a return code.
+            guard ours.count == 1, let scheduled = ours.first,
+                  ScheduledWake.isSameWakeInstant(scheduled, target) else {
                 reply(nil, "The wake time didn’t take effect.")
                 return
             }
-            reply(date, nil)
+            // Reply with what powerd holds, not with what we were handed.
+            // powerd decides what got scheduled; echoing the input back would
+            // report agreement we never actually checked for.
+            reply(scheduled, nil)
         }
     }
 

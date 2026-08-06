@@ -87,6 +87,27 @@ final class ScheduledWakeTests: XCTestCase {
         XCTAssertEqual(result.timeIntervalSince1970, 1_000_060, accuracy: 0.0001)
     }
 
+    func testWholeSecondDropsSubsecondPart() {
+        XCTAssertEqual(ScheduledWake.wholeSecond(Date(timeIntervalSince1970: 1_000_000.999)),
+                       Date(timeIntervalSince1970: 1_000_000))
+        XCTAssertEqual(ScheduledWake.wholeSecond(Date(timeIntervalSince1970: 1_000_000)),
+                       Date(timeIntervalSince1970: 1_000_000))
+    }
+
+    /// A wake that powerd rounded to the second is the wake we asked for.
+    /// Insisting on exact equality would report failure for an event that is
+    /// genuinely sitting on the machine, ready to fire.
+    func testSameWakeInstantIgnoresSubsecondDifference() {
+        let asked = Date(timeIntervalSince1970: 1_000_000.5)
+        let stored = Date(timeIntervalSince1970: 1_000_000)
+        XCTAssertTrue(ScheduledWake.isSameWakeInstant(asked, stored))
+    }
+
+    func testSameWakeInstantRejectsDifferentSeconds() {
+        XCTAssertFalse(ScheduledWake.isSameWakeInstant(Date(timeIntervalSince1970: 1_000_000),
+                                                       Date(timeIntervalSince1970: 1_000_001)))
+    }
+
     // MARK: Filtering — the promise not to touch anyone else's events
 
     func testOwnedWakeDatesIgnoresForeignOwners() {
@@ -250,26 +271,45 @@ final class ScheduledWakeTests: XCTestCase {
     // MARK: Helper capability gate
 
     func testHelperSupportsScheduledWakeAcceptsEqualAndNewer() {
-        XCTAssertTrue(ScheduledWake.helperSupportsScheduledWake(version: "0.2.0"))
-        XCTAssertTrue(ScheduledWake.helperSupportsScheduledWake(version: "0.2.1"))
-        XCTAssertTrue(ScheduledWake.helperSupportsScheduledWake(version: "0.3"))
-        XCTAssertTrue(ScheduledWake.helperSupportsScheduledWake(version: "1.0.0"))
+        XCTAssertEqual(ScheduledWake.helperSupportsScheduledWake(version: "0.2.0"), true)
+        XCTAssertEqual(ScheduledWake.helperSupportsScheduledWake(version: "0.2.1"), true)
+        XCTAssertEqual(ScheduledWake.helperSupportsScheduledWake(version: "0.3"), true)
+        XCTAssertEqual(ScheduledWake.helperSupportsScheduledWake(version: "1.0.0"), true)
+        XCTAssertEqual(ScheduledWake.helperSupportsScheduledWake(version: "0.10.0"), true)
     }
 
     func testHelperSupportsScheduledWakeRejectsOlder() {
-        XCTAssertFalse(ScheduledWake.helperSupportsScheduledWake(version: "0.1.0"))
-        XCTAssertFalse(ScheduledWake.helperSupportsScheduledWake(version: "0.1.9"))
-        XCTAssertFalse(ScheduledWake.helperSupportsScheduledWake(version: "0"))
+        XCTAssertEqual(ScheduledWake.helperSupportsScheduledWake(version: "0.1.0"), false)
+        XCTAssertEqual(ScheduledWake.helperSupportsScheduledWake(version: "0.1.9"), false)
+        XCTAssertEqual(ScheduledWake.helperSupportsScheduledWake(version: "0"), false)
     }
 
-    /// An unreadable version is not evidence the helper can do this. Guessing
-    /// "yes" recreates the six-second hang the gate exists to prevent.
-    func testHelperSupportsScheduledWakeRejectsUnparseableInput() {
-        XCTAssertFalse(ScheduledWake.helperSupportsScheduledWake(version: ""))
-        XCTAssertFalse(ScheduledWake.helperSupportsScheduledWake(version: "abc"))
-        XCTAssertFalse(ScheduledWake.helperSupportsScheduledWake(version: "0.2.0-beta"))
-        XCTAssertFalse(ScheduledWake.helperSupportsScheduledWake(version: "0..2"))
-        XCTAssertFalse(ScheduledWake.helperSupportsScheduledWake(version: "-1.0.0"))
+    /// An unreadable version is not a claim that the helper is old — it's an
+    /// absence of information, and the caller needs to be able to tell the two
+    /// apart to say something true to the user.
+    func testHelperSupportsScheduledWakeIsUnknownForUnparseableInput() {
+        XCTAssertNil(ScheduledWake.helperSupportsScheduledWake(version: ""))
+        XCTAssertNil(ScheduledWake.helperSupportsScheduledWake(version: "abc"))
+        XCTAssertNil(ScheduledWake.helperSupportsScheduledWake(version: "0.2.0-beta"))
+        XCTAssertNil(ScheduledWake.helperSupportsScheduledWake(version: "0..2"))
+        XCTAssertNil(ScheduledWake.helperSupportsScheduledWake(version: "-1.0.0"))
+        XCTAssertNil(ScheduledWake.helperSupportsScheduledWake(version: " 0.2.0"))
+    }
+
+    /// `Int(_:)` accepts a leading sign, so a component like `"+0"` parses to a
+    /// perfectly ordinary number. Left unchecked, `"0.2.+0"` would read as a
+    /// helper new enough to call — the exact misread this gate prevents.
+    func testHelperSupportsScheduledWakeRejectsSignedComponents() {
+        XCTAssertNil(ScheduledWake.helperSupportsScheduledWake(version: "0.2.+0"))
+        XCTAssertNil(ScheduledWake.helperSupportsScheduledWake(version: "+0.2.0"))
+        XCTAssertNil(ScheduledWake.helperSupportsScheduledWake(version: "0.+2.0"))
+        XCTAssertNil(ScheduledWake.helperSupportsScheduledWake(version: "0.2.-0"))
+    }
+
+    /// Non-ASCII digits are numbers to `Character.isNumber` and to `Int(_:)`,
+    /// so they need excluding too — a version is ASCII or it isn't a version.
+    func testHelperSupportsScheduledWakeRejectsNonASCIIDigits() {
+        XCTAssertNil(ScheduledWake.helperSupportsScheduledWake(version: "٠.٢.٠"))
     }
 
     // MARK: Shared presets and formatting

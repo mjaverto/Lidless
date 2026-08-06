@@ -99,8 +99,28 @@ public enum ScheduledWake {
     /// comparison, which is a much worse thing to own than a rounding call.
     /// Truncating up front makes verification an exact match.
     public static func wakeDate(from start: Date, minutes: Int) -> Date {
-        let raw = start.addingTimeInterval(TimeInterval(minutes) * 60)
-        return Date(timeIntervalSince1970: raw.timeIntervalSince1970.rounded(.down))
+        wholeSecond(start.addingTimeInterval(TimeInterval(minutes) * 60))
+    }
+
+    /// `date` with any sub-second part dropped.
+    ///
+    /// Applied again inside the helper rather than trusting the caller to have
+    /// done it: the XPC method is an entry point, and a fractional date there
+    /// would schedule fine and then fail its own read-back check, reporting
+    /// failure for a wake that is genuinely on the machine.
+    public static func wholeSecond(_ date: Date) -> Date {
+        Date(timeIntervalSince1970: date.timeIntervalSince1970.rounded(.down))
+    }
+
+    /// Whether a date read back out of powerd is the one we asked for.
+    ///
+    /// Compared at whole-second resolution because that is the resolution the
+    /// system stores. An exact `==` between a `Date` we constructed and one
+    /// bridged back out of a `CFDate` is a stricter claim than the storage can
+    /// support, and failing on it would mean telling the user their wake didn't
+    /// take while the Mac sits there ready to wake.
+    public static func isSameWakeInstant(_ lhs: Date, _ rhs: Date) -> Bool {
+        wholeSecond(lhs) == wholeSecond(rhs)
     }
 
     // MARK: Reading the system schedule
@@ -174,19 +194,23 @@ public enum ScheduledWake {
     /// First helper version that implements the scheduled-wake XPC methods.
     public static let minimumHelperVersion = "0.2.0"
 
-    /// Whether an installed helper can schedule wakes.
+    /// Whether an installed helper can schedule wakes — or nil when its version
+    /// string doesn't say.
     ///
     /// Every user upgrading into this feature has an older helper already
     /// running, and that helper's exported object has no `scheduleWake:`
     /// selector — calling it doesn't fail, it simply never replies, so the app
     /// would sit on `callWithTimeout` for six seconds and then apologise. The
-    /// gate turns that into a disabled control with a "reinstall" affordance.
+    /// gate turns that into a disabled control.
     ///
-    /// Unparseable input is not supported: an unreadable version is not
-    /// evidence of capability, and guessing "yes" here re-creates the exact
-    /// hang the gate exists to prevent.
-    public static func helperSupportsScheduledWake(version: String) -> Bool {
-        compareVersions(version, minimumHelperVersion).map { $0 >= 0 } ?? false
+    /// Three-valued rather than two, for the same reason
+    /// `PowerParsers.sleepDisabled` is: a version we can't read is not a claim
+    /// that the helper is old. Both answers disable the control, but they are
+    /// different situations and deserve different words — "your helper needs
+    /// reinstalling to use this" is a lie when what actually happened is that
+    /// the daemon never answered. Callers decide; this doesn't decide for them.
+    public static func helperSupportsScheduledWake(version: String) -> Bool? {
+        compareVersions(version, minimumHelperVersion).map { $0 >= 0 }
     }
 
     /// Compare dotted numeric versions. Returns nil if either side isn't one.
@@ -200,12 +224,20 @@ public enum ScheduledWake {
         return 0
     }
 
+    /// Split a dotted version into its numbers, or nil if it isn't one.
+    ///
+    /// Each component must be digits and nothing else. `Int(_:)` is more
+    /// permissive than it looks — it accepts a leading sign, so `"0.2.+0"`
+    /// would otherwise parse as `[0, 2, 0]` and read as a helper new enough to
+    /// call, which is precisely the misread this whole gate exists to prevent.
     private static func numericComponents(_ version: String) -> [Int]? {
         let parts = version.split(separator: ".", omittingEmptySubsequences: false)
         guard !parts.isEmpty else { return nil }
         var out: [Int] = []
         for part in parts {
-            guard let n = Int(part), n >= 0 else { return nil }
+            guard !part.isEmpty, part.allSatisfy(\.isASCII), part.allSatisfy(\.isNumber),
+                  let n = Int(part)
+            else { return nil }
             out.append(n)
         }
         return out

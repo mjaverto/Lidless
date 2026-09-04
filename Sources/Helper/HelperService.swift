@@ -198,13 +198,13 @@ final class HelperService: NSObject, LidlessHelperProtocol {
             hasPendingEnable: pendingEnable != nil,
             hasPendingOff: pendingOff != nil
         ) {
-        case false:
+        case .some(false):
             defer { pendingOff = nil }
             return pendingOff
-        case true:
+        case .some(true):
             defer { pendingEnable = nil }
             return pendingEnable
-        case nil:
+        case .none:
             workerScheduled = false
             return nil
         }

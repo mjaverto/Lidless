@@ -40,6 +40,17 @@ final class SafetyEvaluatorTests: XCTestCase {
             .notCharging
         )
     }
+    func testUnknownPowerFailsClosedWhenChargingOnlyIsEnabled() {
+        var s = defaults
+        s.onlyWhileCharging = true
+        XCTAssertEqual(
+            SafetyEvaluator.reasonToDisable(battery: .unknown,
+                                            thermalSerious: false,
+                                            settings: s),
+            .powerUnavailable
+        )
+    }
+
 
     func testLowBatteryTriggers() {
         let info = BatteryInfo(percent: 15, onAC: false)
@@ -59,6 +70,8 @@ final class SafetyEvaluatorTests: XCTestCase {
         XCTAssertEqual(SafetyReason.notCharging.message, "Auto-paused: not on charger.")
         XCTAssertEqual(SafetyReason.lowBattery(12).message, "Auto-paused: battery 12% on battery power.")
         XCTAssertEqual(SafetyReason.notOnPower.message, "Auto-paused: not connected to power.")
+        XCTAssertEqual(SafetyReason.powerUnavailable.message,
+                       "Auto-paused: power status is unavailable.")
     }
 
     func testNotOnPowerPhrasing() {
@@ -100,6 +113,11 @@ final class SafetyEvaluatorTests: XCTestCase {
         XCTAssertTrue(AutoEnablePolicy.canActivate(
             battery: BatteryInfo(percent: 50, onAC: true), thermalSerious: false, settings: s))
     }
+    func testAutoEnableNeverActivatesWithUnknownPower() {
+        XCTAssertFalse(AutoEnablePolicy.canActivate(
+            battery: .unknown, thermalSerious: false, settings: defaults))
+    }
+
 
     // MARK: AutoEnablePolicy.target — the state reconcile() acts on
 
@@ -124,6 +142,13 @@ final class SafetyEvaluatorTests: XCTestCase {
             battery: BatteryInfo(percent: 90, onAC: false),
             thermalSerious: false, settings: auto), false)
     }
+    func testTargetTurnsOffWhenPowerBecomesUnknown() {
+        XCTAssertEqual(AutoEnablePolicy.target(
+            armed: true, currentlyEnabled: true,
+            battery: .unknown,
+            thermalSerious: false, settings: auto), false)
+    }
+
 
     func testTargetTurnsOffWhenDisarmed() {
         XCTAssertEqual(AutoEnablePolicy.target(

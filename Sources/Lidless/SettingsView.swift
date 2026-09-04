@@ -11,7 +11,7 @@ struct SettingsView: View {
     @EnvironmentObject var state: AppState
     @EnvironmentObject var updater: UpdaterController
 
-    private let repoURL = URL(string: "https://github.com/nghialuong/Lidless")!
+    private let repoURL = URL(string: "https://github.com/mjaverto/Lidless")!
 
     var body: some View {
         Form {

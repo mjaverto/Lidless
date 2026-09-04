@@ -31,6 +31,8 @@ public struct SafetySettings: Equatable {
 public enum SafetyReason: Equatable {
     case highThermal
     case notCharging
+    /// Power-source data is unavailable, malformed, stale, or contradictory.
+    case powerUnavailable
     case lowBattery(Int)
     /// The Mac isn't on external power. Used by auto-enable mode, which requires
     /// external power regardless of the "Only while charging" preference.
@@ -38,10 +40,11 @@ public enum SafetyReason: Equatable {
 
     public var message: String {
         switch self {
-        case .highThermal:        return "Auto-paused: the Mac is running hot."
-        case .notCharging:        return "Auto-paused: not on charger."
-        case .lowBattery(let p):  return "Auto-paused: battery \(p)% on battery power."
-        case .notOnPower:         return "Auto-paused: not connected to power."
+        case .highThermal:          return "Auto-paused: the Mac is running hot."
+        case .notCharging:          return "Auto-paused: not on charger."
+        case .lowBattery(let p):    return "Auto-paused: battery \(p)% on battery power."
+        case .notOnPower:           return "Auto-paused: not connected to power."
+        case .powerUnavailable:     return "Auto-paused: power status is unavailable."
         }
     }
 
@@ -49,10 +52,11 @@ public enum SafetyReason: Equatable {
     /// won't allow it (vs. `message`, which describes a background auto-pause).
     public var blockedMessage: String {
         switch self {
-        case .highThermal:        return "Your Mac is running hot, so keep-awake is paused. It'll be available again once the Mac cools down."
-        case .notCharging:        return "\u{201C}Only while charging\u{201D} is on, so connect your Mac to power to keep it awake."
-        case .lowBattery(let p):  return "Battery is at \(p)%. Charge above the low-battery cutoff to keep your Mac awake."
-        case .notOnPower:         return "Connect your Mac to power to keep it awake."
+        case .highThermal:          return "Your Mac is running hot, so keep-awake is paused. It'll be available again once the Mac cools down."
+        case .notCharging:          return "\u{201C}Only while charging\u{201D} is on, so connect your Mac to power to keep it awake."
+        case .lowBattery(let p):    return "Battery is at \(p)%. Charge above the low-battery cutoff to keep your Mac awake."
+        case .notOnPower:           return "Connect your Mac to power to keep it awake."
+        case .powerUnavailable:     return "Lidless can’t verify the current power source, so keep-awake is paused."
         }
     }
 
@@ -60,10 +64,11 @@ public enum SafetyReason: Equatable {
     /// to power"). Reflects the *current* unmet condition, not an auto-pause event.
     public var checkLabel: String {
         switch self {
-        case .highThermal:        return "Running hot"
-        case .notCharging:        return "Not on charger"
-        case .lowBattery(let p):  return "Battery \(p)% is at or below the cutoff"
-        case .notOnPower:         return "Not connected to power"
+        case .highThermal:          return "Running hot"
+        case .notCharging:          return "Not on charger"
+        case .lowBattery(let p):    return "Battery \(p)% is at or below the cutoff"
+        case .notOnPower:           return "Not connected to power"
+        case .powerUnavailable:     return "Power status unavailable"
         }
     }
 }
@@ -99,7 +104,11 @@ public enum SafetyEvaluator {
         if settings.pauseOnHighThermal && thermalSerious {
             return .highThermal
         }
-        if settings.onlyWhileCharging && !battery.onAC {
+        if battery.powerState == .unknown,
+           settings.onlyWhileCharging || settings.lowBatteryThreshold > 0 {
+            return .powerUnavailable
+        }
+        if settings.onlyWhileCharging && battery.powerState != .ac {
             return .notCharging
         }
         return lowBatteryReason(battery: battery, settings: settings)
@@ -111,7 +120,7 @@ public enum SafetyEvaluator {
     private static func lowBatteryReason(battery: BatteryInfo,
                                          settings: SafetySettings) -> SafetyReason? {
         guard settings.lowBatteryThreshold > 0,
-              !battery.onAC,
+              battery.powerState == .battery,
               battery.percent <= settings.lowBatteryThreshold else { return nil }
         return .lowBattery(battery.percent)
     }
@@ -129,9 +138,15 @@ public enum SafetyEvaluator {
         if settings.pauseOnHighThermal && thermalSerious {
             reasons.append(.highThermal)
         }
-        if requirePower && !battery.onAC {
+        if battery.powerState == .unknown {
+            if requirePower || settings.onlyWhileCharging || settings.lowBatteryThreshold > 0 {
+                reasons.append(.powerUnavailable)
+            }
+            return reasons
+        }
+        if requirePower && battery.powerState != .ac {
             reasons.append(.notOnPower)
-        } else if settings.onlyWhileCharging && !battery.onAC {
+        } else if settings.onlyWhileCharging && battery.powerState != .ac {
             reasons.append(.notCharging)
         }
         if let lowBattery = lowBatteryReason(battery: battery, settings: settings) {
@@ -149,7 +164,7 @@ public enum AutoEnablePolicy {
     public static func canActivate(battery: BatteryInfo,
                                    thermalSerious: Bool,
                                    settings: SafetySettings) -> Bool {
-        guard battery.onAC else { return false }
+        guard battery.powerState == .ac else { return false }
         return SafetyEvaluator.reasonToDisable(battery: battery,
                                                thermalSerious: thermalSerious,
                                                settings: settings) == nil

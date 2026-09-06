@@ -74,11 +74,19 @@ public enum LidlessHelper {
     /// certificates alike, so a locally-built `.dev` app passes exactly as a
     /// released one does.
     public static func codeSigningRequirement(appBundleID: String) -> String {
+        #if DEBUG
+        // Ad-hoc dev builds have no Apple anchor and no team OU, so the release
+        // requirement can never match and the helper drops every connection
+        // (XPC error -67050). Pin the bundle identifier only; the `.dev` bundle
+        // id keeps this from ever matching a shipped app.
+        return "identifier \"\(appBundleID)\""
+        #else
         """
         identifier "\(appBundleID)" \
         and anchor apple generic \
         and certificate leaf[subject.OU] = "\(teamID)"
         """
+        #endif
     }
 }
 

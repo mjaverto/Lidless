@@ -287,6 +287,12 @@ private struct SafetySection: View {
                 .controlSize(.small)
             }
 
+            // With "Only while charging" on, keep-awake only ever runs on
+            // power, so the low-battery cutoff can never fire. The heat toggle
+            // and slider are locked to their current values, which stay
+            // enforced; turn "Only while charging" off to adjust them.
+            let onlyWhileCharging = state.settings.onlyWhileCharging
+
             SettingRow(title: "Pause when running hot") {
                 Toggle("Pause when running hot", isOn: Binding(
                     get: { state.settings.pauseOnHighThermal },
@@ -295,9 +301,11 @@ private struct SafetySection: View {
                 .labelsHidden()
                 .toggleStyle(.switch)
                 .controlSize(.small)
+                .disabled(onlyWhileCharging)
             }
 
             LowBatteryCutoffRow()
+                .disabled(onlyWhileCharging)
         }
     }
 }

@@ -3,6 +3,24 @@ import SwiftUI
 import Foundation
 import OSLog
 
+/// The user-facing keep-awake mode shown in the popover's picker. Backed by
+/// the persisted auto/armed/charging fields; see `AppState.keepAwakeMode`.
+enum KeepAwakeMode: String, CaseIterable, Identifiable {
+    case always
+    case onlyWhileCharging
+    case off
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .always: return "Always"
+        case .onlyWhileCharging: return "Only while charging"
+        case .off: return "Off"
+        }
+    }
+}
+
 @MainActor
 final class AppState: ObservableObject {
     private static let logger = Logger(
@@ -51,10 +69,46 @@ final class AppState: ObservableObject {
                                                settings: settings)
     }
 
-    /// The value the main "Keep awake with lid closed" toggle should show: the
-    /// armed intent in auto mode, the live state in manual mode.
-    var masterToggleOn: Bool {
-        settings.autoEnableWhenCharging ? armed : isEnabled
+    /// The three user-facing modes. Replaces the old trio of a master toggle,
+    /// the auto-enable switch, and "Only while charging": all three expressed
+    /// one binary outcome, and their combinations were hard to predict.
+    var keepAwakeMode: KeepAwakeMode {
+        if settings.autoEnableWhenCharging {
+            guard armed else { return .off }
+            return settings.onlyWhileCharging ? .onlyWhileCharging : .always
+        }
+        // Legacy manual builds had no mode concept; the live state stands in.
+        return isEnabled ? .always : .off
+    }
+
+    /// Switch modes. Maps onto the persisted auto/armed/charging fields, so the
+    /// reconciler, safety checks, and helper need no changes.
+    func setKeepAwakeMode(_ mode: KeepAwakeMode) {
+        switch mode {
+        case .off:
+            if settings.autoEnableWhenCharging {
+                setArmed(false)
+            } else {
+                setEnabled(false, origin: .user)
+            }
+        case .always, .onlyWhileCharging:
+            let onlyCharging = mode == .onlyWhileCharging
+            if settings.autoEnableWhenCharging {
+                if settings.onlyWhileCharging != onlyCharging {
+                    var s = settings
+                    s.onlyWhileCharging = onlyCharging
+                    updateSettings(s)
+                } else if !armed {
+                    setArmed(true)
+                }
+            } else {
+                var s = settings
+                s.autoEnableWhenCharging = true
+                s.onlyWhileCharging = onlyCharging
+                updateSettings(s) // entering auto mode arms and reconciles
+                if !armed { setArmed(true) }
+            }
+        }
     }
 
     /// Launch-at-login state (the app itself).
@@ -265,17 +319,6 @@ final class AppState: ObservableObject {
         }
     }
 
-    /// The main toggle was flipped. In auto mode it sets the armed intent (and
-    /// lets `reconcile()` gate the live state); in manual mode it directly turns
-    /// keep-awake on/off, surfacing any failure/refusal as an alert.
-    func setMasterToggle(_ on: Bool) {
-        if settings.autoEnableWhenCharging {
-            setArmed(on)
-        } else {
-            setEnabled(on, origin: .user)
-        }
-    }
-
     /// Set the auto-mode armed intent, persist it, and reconcile the live state.
     private func setArmed(_ on: Bool) {
         armed = on
@@ -362,12 +405,19 @@ final class AppState: ObservableObject {
     /// — flat battery, running hot — no timer is left counting down for a state
     /// the Mac never entered.
     func keepAwakeFor(minutes: Int) {
+        autoOffMinutes = minutes
+        store.saveAutoOffMinutes(minutes)
+        if settings.autoEnableWhenCharging {
+            // Always mode: the countdown disarms the intent; reconcile turns
+            // the flag off. "No limit" just drops the countdown.
+            setArmed(true)
+            if minutes > 0 { armAutoOff() } else { cancelAutoOff() }
+            return
+        }
         let request = AutoOff.request(minutes: minutes,
                                       isEnabled: isEnabled,
                                       autoModeOn: settings.autoEnableWhenCharging)
         guard request != .ignoredInAutoMode else { return }
-        autoOffMinutes = minutes
-        store.saveAutoOffMinutes(minutes)
         switch request {
         case .ignoredInAutoMode:
             break
@@ -904,8 +954,6 @@ final class AppState: ObservableObject {
         }
     }
 
-    // MARK: Auto-off timer
-
     /// Arm when keep-awake turns on, cancel when it turns off.
     private func updateAutoOff(for enabled: Bool) {
         if enabled { armAutoOff() } else { cancelAutoOff() }
@@ -913,9 +961,10 @@ final class AppState: ObservableObject {
 
     private func armAutoOff() {
         cancelAutoOff()
-        // Auto mode manages activation on its own; a countdown would disarm the
-        // feature out from under it, so auto-off is inert while auto mode is on.
-        guard isEnabled, autoOffMinutes > 0, !settings.autoEnableWhenCharging else { return }
+        // Manual mode only runs a countdown while actually on. In auto mode the
+        // countdown disarms the intent at expiry, so it arms regardless of the
+        // live state (a safety pause while armed just leaves it waiting).
+        guard settings.autoEnableWhenCharging || isEnabled, autoOffMinutes > 0 else { return }
         let deadline = AutoOff.deadline(from: Date(), minutes: autoOffMinutes)
         autoOffDeadline = deadline
         refreshAutoOffRemaining()
@@ -933,22 +982,27 @@ final class AppState: ObservableObject {
         autoOffRemaining = ""
     }
 
+    private func refreshAutoOffRemaining() {
+        guard let deadline = autoOffDeadline else { autoOffRemaining = ""; return }
+        autoOffRemaining = AutoOff.formatCountdown(AutoOff.remaining(deadline: deadline, now: Date()))
+    }
+
     private func autoOffTick() {
         guard let deadline = autoOffDeadline else { return }
         if AutoOff.isExpired(deadline: deadline, now: Date()) {
             let minutes = autoOffMinutes
             cancelAutoOff()
-            setEnabled(false,
-                       note: "Auto-off: \(AutoOff.optionLabel(minutes: minutes)) elapsed.",
-                       origin: .autoOff)
+            let note = "Auto-off: \(AutoOff.optionLabel(minutes: minutes)) elapsed."
+            if settings.autoEnableWhenCharging {
+                // Always mode: disarm the intent; reconcile drops the flag.
+                setArmed(false)
+                lastError = note
+            } else {
+                setEnabled(false, note: note, origin: .autoOff)
+            }
         } else {
             refreshAutoOffRemaining()
         }
-    }
-
-    private func refreshAutoOffRemaining() {
-        guard let deadline = autoOffDeadline else { autoOffRemaining = ""; return }
-        autoOffRemaining = AutoOff.formatCountdown(AutoOff.remaining(deadline: deadline, now: Date()))
     }
 
     // MARK: Battery + safety guard

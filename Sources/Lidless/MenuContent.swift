@@ -40,6 +40,10 @@ struct MenuContent: View {
             if state.keepAwakeMode == .always {
                 KeepAwakeDurationRow()
                     .padding(.horizontal, hInset)
+
+                ProtectionControls()
+                    .padding(.horizontal, hInset)
+                    .padding(.top, 2)
             }
 
             Divider()
@@ -97,9 +101,8 @@ struct MenuContent: View {
 // MARK: - Reusable row
 
 /// A native settings-style row: leading label, flexible gap, trailing control
-/// pinned to the shared right edge. Used for the primary toggle and every
-/// safety row so all controls share one trailing column.
-private struct SettingRow<Trailing: View>: View {
+/// pinned to the shared right edge. Shared with ProtectionControls.
+struct SettingRow<Trailing: View>: View {
     let title: String
     var titleFont: Font = .callout
     var minHeight: CGFloat = 36

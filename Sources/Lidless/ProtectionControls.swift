@@ -1,18 +1,29 @@
 import SwiftUI
 
-/// Protection controls (thermal pause + low-battery cutoff). They live in the
-/// Settings window: they're safeguards, not intent, so they stay out of the
-/// popover and are always adjustable there. Their values stay enforced in
-/// every mode; see `SafetyEvaluator`.
-struct ProtectionSection: View {
+/// The two protection controls, shown in the popover only in the Always mode:
+/// the only mode where keep-awake can run on battery, so the only place where
+/// these settings can actually take effect. Elsewhere they'd be dead controls,
+/// and their values stay enforced regardless of visibility.
+struct ProtectionControls: View {
     @EnvironmentObject var state: AppState
 
     var body: some View {
-        Section("Protection") {
-            Toggle("Pause when running hot", isOn: Binding(
-                get: { state.settings.pauseOnHighThermal },
-                set: { v in var s = state.settings; s.pauseOnHighThermal = v; state.updateSettings(s) }
-            ))
+        VStack(alignment: .leading, spacing: 0) {
+            Text("Protection")
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(.secondary)
+                .padding(.bottom, 2)
+
+            SettingRow(title: "Pause when running hot") {
+                Toggle("Pause when running hot", isOn: Binding(
+                    get: { state.settings.pauseOnHighThermal },
+                    set: { v in var s = state.settings; s.pauseOnHighThermal = v; state.updateSettings(s) }
+                ))
+                .labelsHidden()
+                .toggleStyle(.switch)
+                .controlSize(.small)
+            }
+
             LowBatteryCutoffRow()
         }
     }
@@ -24,9 +35,8 @@ struct LowBatteryCutoffRow: View {
     @EnvironmentObject var state: AppState
 
     /// The value shown while dragging. Committing on every step would write
-    /// UserDefaults — and, in auto mode, run a reconcile that can reach the
-    /// privileged helper — once per 5% of travel, so the commit waits for the
-    /// drag to end.
+    /// UserDefaults — and run a reconcile that can reach the privileged
+    /// helper — once per 5% of travel, so the commit waits for the drag to end.
     @State private var dragging: Double?
 
     private var threshold: Int { state.settings.lowBatteryThreshold }
@@ -72,6 +82,7 @@ struct LowBatteryCutoffRow: View {
             .labelsHidden()
             .controlSize(.small)
         }
-        .padding(.vertical, 2)
+        .frame(minHeight: 36)
+        .padding(.vertical, 4)
     }
 }

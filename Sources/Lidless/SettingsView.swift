@@ -6,7 +6,7 @@ import SwiftUI
 struct SettingsView: View {
     /// Fixed size of the window this view lives in — the view isn't resizable,
     /// so `SettingsWindowController` sizes the window from the same constant.
-    static let preferredSize = CGSize(width: 420, height: 560)
+    static let preferredSize = CGSize(width: 420, height: 460)
 
     @EnvironmentObject var state: AppState
     @EnvironmentObject var updater: UpdaterController
@@ -44,10 +44,8 @@ struct SettingsView: View {
                 Text("Background helper")
             }
 
-            // The auto-off timer is a "Keep awake for…" control in the popover,
-            // next to the mode it governs. Protections are safeguards, not
-            // intent, so they live here where they're always adjustable.
-            ProtectionSection()
+            // Protections live in the popover, shown only where they can take
+            // effect (the Always mode).
 
             Section("Updates") {
                 Toggle("Check for updates automatically", isOn: $updater.automaticallyChecksForUpdates)

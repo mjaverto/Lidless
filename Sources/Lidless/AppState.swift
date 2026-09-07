@@ -48,8 +48,7 @@ final class AppState: ObservableObject {
         guard settings.autoEnableWhenCharging, armed, !isEnabled else { return [] }
         return SafetyEvaluator.allUnmetReasons(battery: currentBattery,
                                                thermalSerious: thermalSerious(),
-                                               settings: settings,
-                                               requirePower: true)
+                                               settings: settings)
     }
 
     /// The value the main "Keep awake with lid closed" toggle should show: the
@@ -284,10 +283,10 @@ final class AppState: ObservableObject {
         reconcileNow()
     }
 
-    /// Auto mode: derive the live keep-awake state from `armed` gated by external
-    /// power + safety, flipping only the live state (never the `armed` intent).
-    /// When conditions aren't met the feature stays armed and the popover's
-    /// warning explains why it isn't currently active.
+    /// Auto mode: derive the live keep-awake state from `armed` gated by the
+    /// enabled safety checks, flipping only the live state (never the `armed`
+    /// intent). When conditions aren't met the feature stays armed and the
+    /// popover's warning explains why it isn't currently active.
     ///
     /// The poll's entry point. No-ops when auto mode is off, when the effective
     /// state already matches, or while an earlier write is still outstanding or

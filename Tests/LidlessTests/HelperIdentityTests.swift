@@ -66,20 +66,36 @@ final class HelperIdentityTests: XCTestCase {
         XCTAssertEqual(LidlessHelper.appBundleID(fromLabel: ""), "")
     }
 
-    /// Exact equality protects all three peer-validation clauses and their
-    /// values: app identifier, Apple trust anchor, and Mike's Team ID.
+    /// Exact equality protects the peer-validation clauses and their values.
+    /// Release demands app identifier, Apple trust anchor, and Team ID; Debug
+    /// builds are ad-hoc signed (no Apple anchor or team OU exists for them),
+    /// so they pin the bundle identifier alone.
     func testRequirementExactlyPinsProductionIdentityAnchorAndTeam() {
+        #if DEBUG
+        XCTAssertEqual(
+            LidlessHelper.codeSigningRequirement(appBundleID: productionID),
+            "identifier \"com.mjaverto.lidless\""
+        )
+        #else
         XCTAssertEqual(
             LidlessHelper.codeSigningRequirement(appBundleID: productionID),
             "identifier \"com.mjaverto.lidless\" and anchor apple generic and certificate leaf[subject.OU] = \"5NWMRTN5BA\""
         )
+        #endif
     }
 
     func testRequirementExactlyPinsDevelopmentIdentityAnchorAndTeam() {
+        #if DEBUG
+        XCTAssertEqual(
+            LidlessHelper.codeSigningRequirement(appBundleID: developmentID),
+            "identifier \"com.mjaverto.lidless.dev\""
+        )
+        #else
         XCTAssertEqual(
             LidlessHelper.codeSigningRequirement(appBundleID: developmentID),
             "identifier \"com.mjaverto.lidless.dev\" and anchor apple generic and certificate leaf[subject.OU] = \"5NWMRTN5BA\""
         )
+        #endif
     }
 
     /// The daemon derives its demanded app identity from the same launchd label

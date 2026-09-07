@@ -326,11 +326,12 @@ private struct LowBatteryCutoffRow: View {
     /// The committed value, or the in-flight one while a drag is in progress.
     private var shown: Int { Int((dragging ?? Double(threshold)).rounded()) }
 
-    /// The cutoff only ever fires off power, so it's meaningless whenever
-    /// keep-awake is already gated on being plugged in — under "Only while
-    /// charging", and equally under auto mode, which requires external power.
+    /// The cutoff only ever fires off power, so it's meaningless while
+    /// "Only while charging" gates keep-awake to external power. Auto mode
+    /// adds no power requirement of its own (see `AutoEnablePolicy`), so the
+    /// cutoff stays live there.
     private var isInactive: Bool {
-        state.settings.onlyWhileCharging || state.settings.autoEnableWhenCharging
+        state.settings.onlyWhileCharging
     }
 
     private var value: Binding<Double> {

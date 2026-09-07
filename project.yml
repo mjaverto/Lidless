@@ -41,8 +41,8 @@ targets:
         SUScheduledCheckInterval: 86400
     settings:
       base:
-        MARKETING_VERSION: "0.1.3"
-        CURRENT_PROJECT_VERSION: "1"
+        MARKETING_VERSION: "1.4.0"
+        CURRENT_PROJECT_VERSION: "4"
         ENABLE_HARDENED_RUNTIME: YES
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
       configs:

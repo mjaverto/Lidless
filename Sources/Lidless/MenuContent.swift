@@ -25,6 +25,10 @@ struct MenuContent: View {
                 .padding(.horizontal, hInset)
                 .padding(.top, 8)
 
+            StatusLine()
+                .padding(.horizontal, hInset)
+                .padding(.top, 12)
+
             Divider()
                 .padding(.horizontal, hInset)
                 .padding(.top, 14)
@@ -32,10 +36,7 @@ struct MenuContent: View {
             ModePickerRow()
                 .padding(.horizontal, hInset)
                 .padding(.top, 12)
-
-            StatusLine()
-                .padding(.horizontal, hInset)
-                .padding(.top, 6)
+                .padding(.bottom, 12)
 
             if state.keepAwakeMode == .always {
                 KeepAwakeDurationRow()
@@ -171,35 +172,34 @@ private struct ModePickerRow: View {
 private struct StatusLine: View {
     @EnvironmentObject var state: AppState
 
-    private var line: (color: Color, text: String) {
+    private var line: (color: Color, icon: String, text: String) {
         if state.keepAwakeMode == .off {
-            return (.secondary, "Keep-awake off")
+            return (.secondary, "moon.zzz", "Keep-awake off")
         }
         if state.isEnabled {
             if !state.autoOffRemaining.isEmpty {
-                return (.green, "Awake, \(state.autoOffRemaining) left")
+                return (.green, "bolt.fill", "Awake, \(state.autoOffRemaining) left")
             }
-            return (.green, state.batteryOnAC ? "Awake, on charger" : "Awake, on battery")
+            return (.green, "bolt.fill",
+                    state.batteryOnAC ? "Awake, on charger" : "Awake, on battery")
         }
         if let reason = state.autoWarningReasons.first {
-            return (Color(nsColor: .systemYellow), "Paused: \(reason.checkLabel)")
+            return (Color(nsColor: .systemYellow), "pause.circle.fill",
+                    "Paused: \(reason.checkLabel)")
         }
-        return (Color(nsColor: .systemYellow), "Paused")
+        return (Color(nsColor: .systemYellow), "pause.circle.fill", "Paused")
     }
 
     var body: some View {
         HStack(spacing: 6) {
-            Circle()
-                .fill(line.color)
-                .frame(width: 8, height: 8)
+            Image(systemName: line.icon)
+                .foregroundStyle(line.color)
             Text(line.text)
+                .foregroundStyle(.primary)
         }
         .font(.callout)
-        .foregroundStyle(.secondary)
-        // Align with the option labels, not the radio dots: the line is the
-        // outcome of the selection above, and a dot at dot-column height
-        // reads as a fourth, pre-selected choice.
-        .padding(.leading, 22)
+        // Headline position: icon carries the state color, text stays
+        // primary so the glance reads first.
         .accessibilityElement(children: .combine)
     }
 }

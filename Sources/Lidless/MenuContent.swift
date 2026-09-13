@@ -196,6 +196,10 @@ private struct StatusLine: View {
         }
         .font(.callout)
         .foregroundStyle(.secondary)
+        // Align with the option labels, not the radio dots: the line is the
+        // outcome of the selection above, and a dot at dot-column height
+        // reads as a fourth, pre-selected choice.
+        .padding(.leading, 22)
         .accessibilityElement(children: .combine)
     }
 }

@@ -628,7 +628,11 @@ final class AppState: ObservableObject {
         )
         switch action {
         case .heartbeat:
-            manageHeartbeat()
+            if isEnabled {
+                manageHeartbeat()
+            } else {
+                reconcileNow()
+            }
         case .writeOff:
             setEnabled(false, note: "Background helper was reinstalled.", origin: .safety)
         }
